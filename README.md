@@ -1,10 +1,10 @@
-# CodeGany App Backend
+# Codegany App Backend
 
-A simple REST API backend built with FastAPI.
+The backend of the Codegany's application.
 
 ## Description
 
-This project is a FastAPI-based backend service that provides API endpoints for the CodeGany application.
+This project is a FastAPI-based backend service that provides API endpoints for the Codegany's application that will be presented on the DEVHUB Hackathon 2025.
 
 ## Setup
 
