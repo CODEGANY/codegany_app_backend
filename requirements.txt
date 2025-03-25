@@ -4,3 +4,4 @@ supabase
 dotenv
 pydantic
 pydantic-settings
+authlib
