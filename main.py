@@ -5,9 +5,11 @@ from dotenv import load_dotenv
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import jwt
 from supabase import create_client
+from enum import Enum
+from datetime import datetime
 
 load_dotenv()
 
@@ -591,3 +593,653 @@ async def register_user(user_data: UserRegistrationRequest) -> UserResponse:
         raise HTTPException(
             status_code=500, detail=f"Failed to register user: {str(e)}"
         )
+
+
+class RequestStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    ORDERED = "ordered"
+    DELIVERED = "delivered"
+    CLOSED = "closed"
+
+class ApprovalDecision(str, Enum):
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    PENDING_INFO = "pending_info"
+
+class TrackingStatus(str, Enum):
+    PREPARED = "prepared"
+    SHIPPED = "shipped"
+    DELIVERED = "delivered"
+
+# Modèles pour PurchaseRequest
+class RequestItemCreate(BaseModel):
+    material_id: int
+    quantity: int = Field(gt=0)
+    estimated_cost: float = Field(gt=0)
+
+class PurchaseRequestCreate(BaseModel):
+    justification: str
+    items: List[RequestItemCreate]
+
+class PurchaseRequestUpdate(BaseModel):
+    justification: Optional[str] = None
+    status: Optional[RequestStatus] = None
+
+class PurchaseRequestResponse(BaseModel):
+    request_id: int
+    user_id: int
+    created_at: datetime
+    status: RequestStatus
+    justification: str
+    items: Optional[List[RequestItemCreate]]
+    
+@app.post("/api/v1/purchase-requests", status_code=201, tags=["Purchase Requests"])
+async def create_purchase_request(
+    request: PurchaseRequestCreate,
+    user = Depends(get_current_user)
+) -> dict:
+    """Create a new purchase request."""
+    try:
+        user_data = supabase_client.table("users").select("role").eq("email", user.get("email")).execute()
+        if not user_data.data or user_data.data[0]["role"] != "logistique":
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        purchase_request = {
+            "user_id": user_data.data[0]["user_id"],
+            "created_at": datetime.now().isoformat(),
+            "status": RequestStatus.PENDING,
+            "justification": request.justification
+        }
+        
+        result = supabase_client.table("purchase_requests").insert(purchase_request).execute()
+        if not result.data:
+            raise HTTPException(
+                status_code=500, 
+                detail="Error creating request."
+            )
+        request_id = result.data[0]["request_id"]
+
+        # Add items
+        items = [{
+            "request_id": request_id,
+            "material_id": item.material_id,
+            "quantity": item.quantity,
+            "estimated_cost": item.estimated_cost
+        } for item in request.items]
+        
+        supabase_client.table("request_items").insert(items).execute()
+
+        return {"request_id": request_id, "message": "Purchase request successfully created."}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/purchase-requests", response_model=List[PurchaseRequestResponse], tags=["Purchase Requests"])
+async def list_purchase_requests(
+    status: Optional[RequestStatus] = None,
+    user = Depends(get_current_user)
+) -> List[PurchaseRequestResponse]:
+    """List all purchase requests."""
+    try:
+        query = supabase_client.table("purchase_requests").select("*")
+        if status:
+            query = query.eq("status", status)
+        
+        # Filter by user except for the daf
+        if user.get("role") != "daf":
+            query = query.eq("user_id", user.get("user_id"))
+            
+        result = query.execute()
+        return result.data
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/purchase-requests/{request_id}", response_model=PurchaseRequestResponse, tags=["Purchase Requests"])
+async def get_purchase_request(
+    request_id: int,
+    user = Depends(get_current_user)
+) -> PurchaseRequestResponse:
+    """Retrieve details of a purchase request."""
+    try:
+        result = supabase_client.table("purchase_requests")\
+            .select("*, request_items(*)")\
+            .eq("request_id", request_id)\
+            .single()\
+            .execute()
+            
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Request not found")
+            
+        # Check permissions
+        if user.get("role") != "daf" and result.data["user_id"] != user.get("user_id"):
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+            
+        return result.data
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/purchase-requests/{request_id}", tags=["Purchase Requests"])
+async def update_purchase_request(
+    request_id: int,
+    request: PurchaseRequestUpdate,
+    user = Depends(get_current_user)
+) -> dict:
+    """Update a purchase request."""
+    try:
+        # Check existence
+        current_request = supabase_client.table("purchase_requests")\
+            .select("user_id, status")\
+            .eq("request_id", request_id)\
+            .single()\
+            .execute()
+            
+        if not current_request.data:
+            raise HTTPException(status_code=404, detail="Request not found")
+            
+        
+        if user.get("role") != "daf" and current_request.data["user_id"] != user.get("user_id"):
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+            
+        
+        if current_request.data["status"] not in [RequestStatus.PENDING, RequestStatus.REJECTED]:
+            raise HTTPException(status_code=400, detail="Unable to edit an approved request")
+            
+        update_data = request.dict(exclude_unset=True)
+        result = supabase_client.table("purchase_requests")\
+            .update(update_data)\
+            .eq("request_id", request_id)\
+            .execute()
+            
+        return {"message": "Request updated successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/v1/purchase-requests/{request_id}",tags=["Purchase Requests"])
+async def delete_purchase_request(
+    request_id: int,
+    user = Depends(get_current_user)
+) -> dict:
+    """Delete a purchase request."""
+    try:
+        
+        current_request = supabase_client.table("purchase_requests")\
+            .select("user_id, status")\
+            .eq("request_id", request_id)\
+            .single()\
+            .execute()
+            
+        if not current_request.data:
+            raise HTTPException(status_code=404, detail="Request not found")
+            
+        
+        if user.get("role") != "daf" and current_request.data["user_id"] != user.get("user_id"):
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+            
+        
+        if current_request.data["status"] not in [RequestStatus.PENDING, RequestStatus.REJECTED]:
+            raise HTTPException(status_code=400, detail="Unable to delete an approved request")
+            
+    
+        supabase_client.table("request_items").delete().eq("request_id", request_id).execute()
+        
+        supabase_client.table("purchase_requests").delete().eq("request_id", request_id).execute()
+            
+        return {"message": "Request deleted successfully"}
+            
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class RequestItemBase(BaseModel):
+    material_id: int
+    quantity: int = Field(gt=0)
+    estimated_cost: float = Field(gt=0)
+
+class RequestItemCreate(RequestItemBase):
+    request_id: int
+
+class RequestItemResponse(RequestItemBase):
+    request_item_id: int
+    request_id: int
+    created_at: datetime
+
+@app.post("/api/v1/request-items", response_model=RequestItemResponse, tags=["Request Items"])
+async def create_request_item(
+    item: RequestItemCreate,
+    user = Depends(get_current_user)
+) -> RequestItemResponse:
+    """Create a new request item."""
+    try:
+        
+        user_data = supabase_client.table("users").select("role").eq("email", user.get("email")).execute()
+        if not user_data.data or user_data.data[0]["role"] != "logistique":
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        
+        material = supabase_client.table("materials").select("*").eq("material_id", item.material_id).execute()
+        if not material.data:
+            raise HTTPException(status_code=404, detail="Material not found")
+
+        
+        request = supabase_client.table("purchase_requests").select("status").eq("request_id", item.request_id).execute()
+        if not request.data:
+            raise HTTPException(status_code=404, detail="Request not found")
+        if request.data[0]["status"] != RequestStatus.PENDING:
+            raise HTTPException(status_code=400, detail="The request is no longer editable")
+
+        result = supabase_client.table("request_items").insert(item.dict()).execute()
+        return result.data[0]
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/request-items/{request_id}", response_model=List[RequestItemResponse], tags=["Request Items"])
+async def list_request_items(
+    request_id: int,
+    user = Depends(get_current_user)
+) -> List[RequestItemResponse]:
+    """List the items of a request."""
+    try:
+        result = supabase_client.table("request_items")\
+            .select("*")\
+            .eq("request_id", request_id)\
+            .execute()
+        return result.data
+    
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/request-items/{item_id}", response_model=RequestItemResponse,tags=["Request Items"])
+async def update_request_item(
+    item_id: int,
+    item: RequestItemBase,
+    user = Depends(get_current_user)
+) -> RequestItemResponse:
+    """Update item."""
+    try:
+        
+        current_item = supabase_client.table("request_items").select("request_id").eq("request_item_id", item_id).execute()
+        if not current_item.data:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        request = supabase_client.table("purchase_requests")\
+            .select("status")\
+            .eq("request_id", current_item.data[0]["request_id"])\
+            .execute()
+        
+        if request.data[0]["status"] != RequestStatus.PENDING:
+            raise HTTPException(status_code=400, detail="The request is no longer editable")
+
+        result = supabase_client.table("request_items")\
+            .update(item.dict())\
+            .eq("request_item_id", item_id)\
+            .execute()
+        return result.data[0]
+    
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/v1/request-items/{item_id}",tags=["Request Items"])
+async def delete_request_item(
+    item_id: int,
+    user = Depends(get_current_user)
+) -> dict:
+    """Delete item."""
+    try:
+        current_item = supabase_client.table("request_items").select("request_id").eq("request_item_id", item_id).execute()
+        if not current_item.data:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        request = supabase_client.table("purchase_requests")\
+            .select("status")\
+            .eq("request_id", current_item.data[0]["request_id"])\
+            .execute()
+        
+        if request.data[0]["status"] != RequestStatus.PENDING:
+            raise HTTPException(status_code=400, detail="The request is no longer editabl")
+
+        supabase_client.table("request_items").delete().eq("request_item_id", item_id).execute()
+        return {"message": "Item deleted successfully"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ApprovalCreate(BaseModel):
+    decision: ApprovalDecision
+    comment: Optional[str] = None
+
+class ApprovalResponse(BaseModel):
+    approval_id: int
+    request_id: int
+    daf_user_id: int
+    decision: ApprovalDecision
+    comment: Optional[str]
+    approved_at: datetime
+
+@app.post("/api/v1/approvals/{request_id}", response_model=ApprovalResponse,tags=["Approvals"])
+async def create_approval(
+    request_id: int,
+    approval: ApprovalCreate,
+    user = Depends(get_current_user)
+) -> ApprovalResponse:
+    """Create an approval for a request."""
+    try:
+        
+        user_data = supabase_client.table("users").select("*").eq("email", user.get("email")).execute()
+        if not user_data.data or user_data.data[0]["role"] != "daf":
+            raise HTTPException(status_code=403, detail="Only the DAF can approve requests")
+
+        
+        request = supabase_client.table("purchase_requests").select("status").eq("request_id", request_id).execute()
+        if not request.data:
+            raise HTTPException(status_code=404, detail="Request not found")
+        if request.data[0]["status"] != RequestStatus.PENDING:
+            raise HTTPException(status_code=400, detail="The request is not pending approval")
+
+        approval_data = {
+            "request_id": request_id,
+            "daf_user_id": user_data.data[0]["user_id"],
+            "decision": approval.decision,
+            "comment": approval.comment,
+            "approved_at": datetime.now().isoformat()
+        }
+
+        result = supabase_client.table("approvals").insert(approval_data).execute()
+        
+        
+        new_status = RequestStatus.APPROVED if approval.decision == ApprovalDecision.APPROVED else RequestStatus.REJECTED
+        supabase_client.table("purchase_requests")\
+            .update({"status": new_status})\
+            .eq("request_id", request_id)\
+            .execute()
+
+        return result.data[0]
+    
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/approvals/{request_id}", response_model=ApprovalResponse,tags=["Approvals"])
+async def get_approval(
+    request_id: int,
+    user = Depends(get_current_user)
+) -> ApprovalResponse:
+    """Getting an application approved."""
+    try:
+        result = supabase_client.table("approvals")\
+            .select("*")\
+            .eq("request_id", request_id)\
+            .execute()
+            
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Approval not found")
+            
+        return result.data[0]
+    
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/approvals", response_model=List[ApprovalResponse],tags=["Approvals"])
+async def list_approvals(
+    user = Depends(get_current_user)
+) -> List[ApprovalResponse]:
+    """List all approvals (accessible only to the daf)."""
+    try:
+        if user.get("role") != "daf":
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+            
+        result = supabase_client.table("approvals")\
+            .select("*")\
+            .execute()
+            
+        return result.data
+    
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class OrderItemCreate(BaseModel):
+    material_id: int
+    quantity: int = Field(gt=0)
+    actual_cost: float = Field(gt=0)
+
+class OrderCreate(BaseModel):
+    request_id: int
+    supplier_id: int
+    order_number: str
+    items: List[OrderItemCreate]
+
+class OrderResponse(BaseModel):
+    order_id: int
+    request_id: int
+    supplier_id: int
+    order_number: str
+    tracking_status: TrackingStatus
+    ordered_at: datetime
+    delivered_at: Optional[datetime]
+    items: List[OrderItemCreate]
+
+@app.post("/api/v1/orders", response_model=OrderResponse,tags=["Orders"])
+async def create_order(
+    order: OrderCreate,
+    user = Depends(get_current_user)
+) -> OrderResponse:
+    """Create a new order."""
+    try:
+        
+        if user.get("role") != "logistique":
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        # Check application approved
+        request = supabase_client.table("purchase_requests")\
+            .select("status")\
+            .eq("request_id", order.request_id)\
+            .single()\
+            .execute()
+            
+        if not request.data or request.data["status"] != RequestStatus.APPROVED:
+            raise HTTPException(status_code=400, detail="The request must be approved")
+
+        # Add order
+        order_data = {
+            "request_id": order.request_id,
+            "supplier_id": order.supplier_id,
+            "order_number": order.order_number,
+            "tracking_status": TrackingStatus.PREPARED,
+            "ordered_at": datetime.now().isoformat()
+        }
+
+        result = supabase_client.table("orders").insert(order_data).execute()
+        order_id = result.data[0]["order_id"]
+
+        # Add items
+        for item in order.items:
+            item_data = {
+                "order_id": order_id,
+                "material_id": item.material_id,
+                "quantity": item.quantity,
+                "actual_cost": item.actual_cost
+            }
+            supabase_client.table("order_items").insert(item_data).execute()
+
+        
+        supabase_client.table("purchase_requests")\
+            .update({"status": RequestStatus.ORDERED})\
+            .eq("request_id", order.request_id)\
+            .execute()
+
+        return {**result.data[0], "items": order.items}
+    
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/orders/{order_id}/tracking",tags=["Orders"])
+async def update_tracking(
+    order_id: int,
+    tracking_status: TrackingStatus,
+    user = Depends(get_current_user)
+) -> dict:
+    """Update delivery status."""
+    try:
+        if user.get("role") != "logistique":
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        update_data = {"tracking_status": tracking_status}
+        if tracking_status == TrackingStatus.DELIVERED:
+            update_data["delivered_at"] = datetime.now().isoformat()
+
+        result = supabase_client.table("orders")\
+            .update(update_data)\
+            .eq("order_id", order_id)\
+            .execute()
+
+        if tracking_status == TrackingStatus.DELIVERED:
+            
+            order = result.data[0]
+            supabase_client.table("purchase_requests")\
+                .update({"status": RequestStatus.DELIVERED})\
+                .eq("request_id", order["request_id"])\
+                .execute()
+
+        return {"message": "Status updated successfully"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/orders", response_model=List[OrderResponse],tags=["Orders"])
+async def list_orders(user = Depends(get_current_user)) -> List[OrderResponse]:
+    """List all commands."""
+    try:
+        if user.get("role") not in ["logistique", "daf"]:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+        
+        result = supabase_client.table("orders")\
+            .select("*, order_items(*)")\
+            .execute()
+        return result.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/orders/{order_id}", response_model=OrderResponse,tags=["Orders"])
+async def get_order(
+    order_id: int,
+    user = Depends(get_current_user)
+) -> OrderResponse:
+    """Get order details."""
+    try:
+        if user.get("role") not in ["logistique", "daf"]:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+        
+        result = supabase_client.table("orders")\
+            .select("*, order_items(*)")\
+            .eq("order_id", order_id)\
+            .single()\
+            .execute()
+            
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Order not found")
+            
+        return result.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/orders", response_model=OrderResponse,tags=["Orders"])
+async def create_order(
+    order: OrderCreate,
+    user = Depends(get_current_user)
+) -> OrderResponse:
+    """Create a new order."""
+    try:
+        if user.get("role") != "logistique":
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+    
+        request = supabase_client.table("purchase_requests")\
+            .select("status")\
+            .eq("request_id", order.request_id)\
+            .single()\
+            .execute()
+            
+        if not request.data or request.data["status"] != "approved":
+            raise HTTPException(status_code=400, detail="The request must be approved")
+
+        
+        order_data = {
+            "request_id": order.request_id,
+            "supplier_id": order.supplier_id,
+            "order_number": order.order_number,
+            "tracking_status": TrackingStatus.PREPARED,
+            "ordered_at": datetime.now().isoformat()
+        }
+
+        order_result = supabase_client.table("orders").insert(order_data).execute()
+        order_id = order_result.data[0]["order_id"]
+
+        
+        for item in order.items:
+            order_item = {
+                "order_id": order_id,
+                "material_id": item.material_id,
+                "quantity": item.quantity,
+                "actual_cost": item.actual_cost
+            }
+            supabase_client.table("order_items").insert(order_item).execute()
+
+        
+        supabase_client.table("purchase_requests")\
+            .update({"status": RequestStatus.ORDERED})\
+            .eq("request_id", order.request_id)\
+            .execute()
+
+        return await get_order(order_id, user)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/orders/{order_id}/tracking",tags=["Orders"])
+async def update_order_tracking(
+    order_id: int,
+    tracking_status: TrackingStatus,
+    user = Depends(get_current_user)
+) -> dict:
+    """Update the delivery status of an order."""
+    try:
+        if user.get("role") != "logistique":
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        update_data = {"tracking_status": tracking_status}
+        if tracking_status == TrackingStatus.DELIVERED:
+            update_data["delivered_at"] = datetime.now().isoformat()
+
+        order = supabase_client.table("orders")\
+            .update(update_data)\
+            .eq("order_id", order_id)\
+            .execute()
+
+        if tracking_status == TrackingStatus.DELIVERED:
+            supabase_client.table("purchase_requests")\
+                .update({"status": RequestStatus.DELIVERED})\
+                .eq("request_id", order.data[0]["request_id"])\
+                .execute()
+
+        return {"message": "Order status updated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
