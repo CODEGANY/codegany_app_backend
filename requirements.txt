@@ -2,4 +2,4 @@ uvicorn
 fastapi
 supabase
 dotenv
-authlib
+pyjwt

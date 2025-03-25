@@ -1,19 +1,32 @@
 import os
+import json
+from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from authlib.jose import jwt
-from authlib.jose import jwk
-import functools
-import requests
+import jwt
 from supabase import create_client
 
 load_dotenv()
 
-app: FastAPI = FastAPI()
-auth0_domain: str = os.environ.get("AUTH0_DOMAIN")
-auth0_audience: str = os.environ.get("AUTH0_AUDIENCE")
+app: FastAPI = FastAPI(
+    title="Equipment Purchase Management API",
+    description="API for managing equipment purchases in companies",
+    version="1.0.0",
+)
+
+# CORS Configuration - Allow all origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
+)
+
+# Load environment variables
 supabase_url: str = os.environ.get("SUPABASE_PROJECT_URL")
 supabase_key: str = os.environ.get("SUPABASE_API_KEY")
 
@@ -22,60 +35,86 @@ supabase_client = create_client(supabase_url, supabase_key)
 
 
 @app.get("/")
-def root():
+async def root() -> Dict[str, str]:
+    """Root endpoint that returns a simple greeting.
+    
+    Returns:
+        Dict[str, str]: A greeting message
+    """
     return {"Hello": "World"}
 
 
-# Cache for JWKS
-@functools.lru_cache(maxsize=1)
-def get_jwks():
-    jwks_url = f"https://{auth0_domain}/.well-known/jwks.json"
-    response = requests.get(jwks_url)
-    return response.json()
+class AuthError(Exception):
+    """Custom exception class for authentication errors."""
+    
+    def __init__(self, status_code: int, message: str):
+        self.status_code = status_code
+        self.message = message
 
 
-# Function to validate token
-def validate_token(token):
-    jwks = get_jwks()
-    headers = jwt.get_unverified_headers(token)
-    kid = headers["kid"]
-    for key in jwks["keys"]:
-        if key["kid"] == kid:
-            public_key = jwk.JWK.from_dict(key)
-            try:
-                payload = jwt.decode(
-                    token,
-                    public_key,
-                    audience=auth0_audience,
-                    issuer=f"https://{auth0_domain}/",
-                )
-                return payload
-            except Exception as e:
-                raise HTTPException(status_code=401, detail=str(e))
-    raise HTTPException(status_code=401, detail="Invalid token")
-
-
-# Function to extract token from header
-def extract_token(request):
-    authorization_header = request.headers.get("Authorization")
-    if not authorization_header or not authorization_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Token missing or invalid")
-    return authorization_header.split(" ")[1]
-
-
-# Dependency to get the user from the token
-async def get_current_user(token: str = Depends(extract_token)):
-    try:
-        payload = validate_token(token)
-        return payload
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
-
-# Models for Supplier operations
-class SupplierResponse(BaseModel):
+class TokenRequest(BaseModel):
+    """Pydantic model representing the token request from frontend.
+    
+    Attributes:
+        token: JWT token for authentication
     """
-    Pydantic model representing a supplier's data in response objects.
+    token: str
+
+
+async def extract_token(request: Request) -> str:
+    """Extract the JWT token from the request body.
+    
+    Args:
+        request: The FastAPI request object
+        
+    Returns:
+        str: The extracted JWT token
+        
+    Raises:
+        HTTPException: If the token is missing or invalid
+    """
+    try:
+        # Parse request body as JSON
+        body = await request.json()
+        
+        # Check if token exists in the request body
+        if not body or "token" not in body:
+            raise HTTPException(status_code=401, detail="Token missing in request body")
+        
+        return body["token"]
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to extract token: {str(e)}")
+
+
+async def get_current_user(token: str = Depends(extract_token)) -> Dict[str, Any]:
+    """Decode the JWT token sent from frontend without verification.
+    
+    Args:
+        token: JWT token extracted from the request body
+        
+    Returns:
+        Dict[str, Any]: The decoded JWT payload
+        
+    Raises:
+        HTTPException: If token decoding fails
+    """
+    try:
+        # Decode the JWT token without verification
+        # Setting verify_signature=False allows us to decode the token without checking signature
+        payload = jwt.decode(token, options={"verify_signature": False})
+        return payload
+    except jwt.DecodeError:
+        raise HTTPException(status_code=401, detail="Invalid token format")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Token decoding error: {str(e)}")
+
+
+class SupplierResponse(BaseModel):
+    """Pydantic model representing a supplier's data in response objects.
 
     Attributes:
         supplier_id: Unique identifier for the supplier
@@ -83,25 +122,23 @@ class SupplierResponse(BaseModel):
         supplier_description: Optional description of the supplier
         supplier_email: Optional email contact for the supplier
     """
-
     supplier_id: int
     supplier_name: str
-    supplier_description: str | None = None
-    supplier_email: str | None = None
+    supplier_description: Optional[str] = None
+    supplier_email: Optional[str] = None
 
 
-@app.get("/api/v1/suppliers", response_model=list[SupplierResponse], tags=["Suppliers"])
-async def get_suppliers(user: dict = Depends(get_current_user)) -> list[SupplierResponse]:
-    """
-    Retrieves all suppliers from the database.
+@app.get("/api/v1/suppliers", response_model=List[SupplierResponse], tags=["Suppliers"])
+async def get_suppliers(user: Dict[str, Any] = Depends(get_current_user)) -> List[SupplierResponse]:
+    """Retrieves all suppliers from the database.
     
-    This endpoint requires authentication via Bearer token.
+    This endpoint requires authentication via JWT token in request body.
     
     Args:
-        user: User payload from the validated JWT token
+        user: User payload from the decoded JWT token
     
     Returns:
-        list[SupplierResponse]: List of all suppliers in the database
+        List[SupplierResponse]: List of all suppliers in the database
     
     Raises:
         HTTPException(401): If authentication fails or token is invalid
@@ -116,31 +153,27 @@ async def get_suppliers(user: dict = Depends(get_current_user)) -> list[Supplier
         )
 
 
-# Endpoint to check if user exists and get user data
 class UserResponse(BaseModel):
-    """
-    Pydantic model representing user data in response objects.
+    """Pydantic model representing user data in response objects.
 
     Attributes:
         exists: Boolean indicating if the user exists in the database
         user_data: Optional user data if the user exists
     """
-
     exists: bool
-    user_data: dict | None = None
+    user_data: Optional[Dict[str, Any]] = None
 
 
-@app.get(
+@app.post(
     "/api/v1/auth/check-user", response_model=UserResponse, tags=["Authentication"]
 )
-async def check_user(user: dict = Depends(get_current_user)) -> UserResponse:
-    """
-    Checks if the authenticated user exists in the database and returns their information.
+async def check_user(user: Dict[str, Any] = Depends(get_current_user)) -> UserResponse:
+    """Checks if the authenticated user exists in the database and returns their information.
 
-    This endpoint requires authentication via Bearer token.
+    This endpoint requires authentication via JWT token in request body.
 
     Args:
-        user: User payload from the validated JWT token
+        user: User payload from the decoded JWT token
 
     Returns:
         UserResponse: Object containing existence flag and user data if found
@@ -148,13 +181,21 @@ async def check_user(user: dict = Depends(get_current_user)) -> UserResponse:
     Raises:
         HTTPException(500): If there's an error accessing the database
     """
-    user_id = user["sub"]
     try:
+        # Get the email from the decoded JWT token
+        user_email = user.get("email")
+        
+        if not user_email:
+            raise HTTPException(status_code=400, detail="Email not found in token")
+            
+        # Query the database using email instead of user_id
         response = (
-            supabase_client.table("Users").select("*").eq("user_id", user_id).execute()
+            supabase_client.table("users").select("*").eq("email", user_email).execute()
         )
+        
         exists = len(response.data) > 0
         user_data = response.data[0] if exists else None
+        
         return UserResponse(exists=exists, user_data=user_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
