@@ -2,3 +2,4 @@ uvicorn
 fastapi
 supabase
 dotenv
+authlib
