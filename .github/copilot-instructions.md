@@ -37,8 +37,12 @@
 
 ### Users
 Represents the actors: Logistics Manager, Finance Director, and Supplier.
-- `user_id`: VARCHAR(255) [Primary Key]
+- `user_id`: SERIAL [Primary Key]
 - `username`: VARCHAR(50) [NOT NULL]
+- `first_name`: VARCHAR(50)
+- `last_name`: VARCHAR(50)
+- `cin`: VARCHAR(12)
+- `phone`: VARCHAR(10)
 - `role`: user_role [NOT NULL]
 - `email`: VARCHAR(100) [NOT NULL]
 
@@ -61,7 +65,7 @@ Lists the available materials or those referenced for purchases (e.g., internal 
 ### PurchaseRequests
 Represents the requests submitted by the Logistics Manager.
 - `request_id`: SERIAL [Primary Key]
-- `user_id`: VARCHAR(255) [Foreign Key -> Users.user_id, NOT NULL]
+- `user_id`: INT [Foreign Key -> Users.user_id, NOT NULL]
 - `created_at`: TIMESTAMP WITH TIME ZONE [NOT NULL]
 - `status`: request_status [NOT NULL]
 - `justification`: TEXT [NOT NULL]
@@ -78,7 +82,7 @@ Links purchase requests with requested materials (allows multiple items per requ
 Records the decisions of the Financial Director (DAF).
 - `approval_id`: SERIAL [Primary Key]
 - `request_id`: INT [Foreign Key -> PurchaseRequests.request_id, NOT NULL]
-- `daf_user_id`: VARCHAR(255) [Foreign Key -> Users.user_id, NOT NULL]
+- `daf_user_id`: INT [Foreign Key -> Users.user_id, NOT NULL]
 - `decision`: approval_decision [NOT NULL]
 - `comment`: TEXT
 - `approved_at`: TIMESTAMP WITH TIME ZONE
