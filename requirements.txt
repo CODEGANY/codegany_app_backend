@@ -2,3 +2,5 @@ uvicorn
 fastapi
 supabase
 dotenv
+pydantic
+pydantic-settings
