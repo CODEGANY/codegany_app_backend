@@ -91,16 +91,20 @@ class SupplierResponse(BaseModel):
 
 
 @app.get("/api/v1/suppliers", response_model=list[SupplierResponse], tags=["Suppliers"])
-async def get_suppliers() -> list[SupplierResponse]:
+async def get_suppliers(user: dict = Depends(get_current_user)) -> list[SupplierResponse]:
     """
     Retrieves all suppliers from the database.
-
-    This endpoint is currently unprotected and does not require authentication.
-
+    
+    This endpoint requires authentication via Bearer token.
+    
+    Args:
+        user: User payload from the validated JWT token
+    
     Returns:
         list[SupplierResponse]: List of all suppliers in the database
-
+    
     Raises:
+        HTTPException(401): If authentication fails or token is invalid
         HTTPException(500): If there's an error retrieving data from the database
     """
     try:
