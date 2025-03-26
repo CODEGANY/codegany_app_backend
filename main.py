@@ -6,7 +6,6 @@ from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import jwt
 
-from models.models import *
 
 app: FastAPI = FastAPI(
     title="Equipment Purchase Management API",
@@ -25,6 +24,7 @@ app.add_middleware(
 
 
 
+from models.models import *
 
 @app.get("/")
 async def root() -> Dict[str, str]:
