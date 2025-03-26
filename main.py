@@ -1,17 +1,12 @@
-import os
 import json
 from typing import Optional, List, Dict, Any
-from dotenv import load_dotenv
+from services.connection_db import supabase_client
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 import jwt
-from supabase import create_client
-from enum import Enum
-from datetime import datetime
 
-load_dotenv()
+from models.models import *
 
 app: FastAPI = FastAPI(
     title="Equipment Purchase Management API",
@@ -28,12 +23,7 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all headers
 )
 
-# Load environment variables
-supabase_url: str = os.environ.get("SUPABASE_PROJECT_URL")
-supabase_key: str = os.environ.get("SUPABASE_API_KEY")
 
-# Initialize Supabase client
-supabase_client = create_client(supabase_url, supabase_key)
 
 
 @app.get("/")
@@ -54,13 +44,7 @@ class AuthError(Exception):
         self.message = message
 
 
-class TokenRequest(BaseModel):
-    """Pydantic model representing the token request from frontend.
-    
-    Attributes:
-        token: JWT token for authentication
-    """
-    token: str
+
 
 
 async def extract_token(request: Request) -> str:
@@ -115,19 +99,7 @@ async def get_current_user(token: str = Depends(extract_token)) -> Dict[str, Any
         raise HTTPException(status_code=401, detail=f"Token decoding error: {str(e)}")
 
 
-class SupplierResponse(BaseModel):
-    """Pydantic model representing a supplier's data in response objects.
 
-    Attributes:
-        supplier_id: Unique identifier for the supplier
-        supplier_name: Name of the supplier company
-        supplier_description: Optional description of the supplier
-        supplier_email: Optional email contact for the supplier
-    """
-    supplier_id: int
-    supplier_name: str
-    supplier_description: Optional[str] = None
-    supplier_email: Optional[str] = None
 
 
 @app.get("/api/v1/suppliers", response_model=List[SupplierResponse], tags=["Suppliers"])
@@ -155,15 +127,7 @@ async def get_suppliers(user: Dict[str, Any] = Depends(get_current_user)) -> Lis
         )
 
 
-class UserResponse(BaseModel):
-    """Pydantic model representing user data in response objects.
 
-    Attributes:
-        exists: Boolean indicating if the user exists in the database
-        user_data: Optional user data if the user exists
-    """
-    exists: bool
-    user_data: Optional[Dict[str, Any]] = None
 
 
 @app.post(
@@ -203,47 +167,17 @@ async def check_user(user: Dict[str, Any] = Depends(get_current_user)) -> UserRe
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
-class MaterialResponse(BaseModel):
-    """Pydantic model representing a material's data in response objects.
-
-    Attributes:
-        material_id: Unique identifier for the material
-        name: Name of the material
-        category: Category the material belongs to
-        unit_price: Price per unit of the material
-        supplier_id: ID of the supplier providing this material
-        stock_available: Current available stock quantity
-    """
-    material_id: int
-    name: str
-    category: str
-    unit_price: float
-    supplier_id: int
-    stock_available: int
 
 
-class PaginatedMaterialsResponse(BaseModel):
-    """Pydantic model representing a paginated response of materials.
-    
-    Attributes:
-        data: List of materials for the current page
-        total_count: Total number of materials in the database
-        page: Current page number
-        page_size: Number of items per page
-        total_pages: Total number of pages available
-    """
-    data: List[MaterialResponse]
-    total_count: int
-    page: int
-    page_size: int
-    total_pages: int
+
+
 
 
 @app.get("/api/v1/materials", response_model=PaginatedMaterialsResponse, tags=["Materials"])
 async def get_materials(
     page: int = 1, 
     page_size: int = 10,
-    user: Dict[str, Any] = Depends(get_current_user)
+    #user: Dict[str, Any] = Depends(get_current_user)
 ) -> PaginatedMaterialsResponse:
     """Retrieves materials from the database with pagination support.
     
@@ -306,21 +240,7 @@ async def get_materials(
         )
 
 
-class MaterialUpdateRequest(BaseModel):
-    """Pydantic model for updating a material.
-    
-    Attributes:
-        name: Updated name of the material
-        category: Updated category of the material
-        unit_price: Updated price per unit
-        supplier_id: Updated ID of the supplier
-        stock_available: Updated stock quantity
-    """
-    name: Optional[str] = None
-    category: Optional[str] = None
-    unit_price: Optional[float] = None
-    supplier_id: Optional[int] = None
-    stock_available: Optional[int] = None
+
 
 
 @app.put("/api/v1/materials/{material_id}", response_model=MaterialResponse, tags=["Materials"])
@@ -501,25 +421,7 @@ async def delete_material(
         )
 
 
-class UserRegistrationRequest(BaseModel):
-    """Pydantic model for user registration requests.
-    
-    Attributes:
-        username: User's login username
-        first_name: User's first name
-        last_name: User's last name
-        cin: User's identification number
-        phone: User's phone number
-        role: User's role in the system (logistique or daf)
-        email: User's email address
-    """
-    username: str
-    first_name: str
-    last_name: str
-    cin: str
-    phone: str
-    role: str  # Should be either 'logistique' or 'daf'
-    email: str
+
 
 
 @app.post("/api/v1/users/register", response_model=UserResponse, tags=["Users"])
@@ -595,45 +497,7 @@ async def register_user(user_data: UserRegistrationRequest) -> UserResponse:
         )
 
 
-class RequestStatus(str, Enum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    ORDERED = "ordered"
-    DELIVERED = "delivered"
-    CLOSED = "closed"
 
-class ApprovalDecision(str, Enum):
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    PENDING_INFO = "pending_info"
-
-class TrackingStatus(str, Enum):
-    PREPARED = "prepared"
-    SHIPPED = "shipped"
-    DELIVERED = "delivered"
-
-# Modèles pour PurchaseRequest
-class RequestItemCreate(BaseModel):
-    material_id: int
-    quantity: int = Field(gt=0)
-    estimated_cost: float = Field(gt=0)
-
-class PurchaseRequestCreate(BaseModel):
-    justification: str
-    items: List[RequestItemCreate]
-
-class PurchaseRequestUpdate(BaseModel):
-    justification: Optional[str] = None
-    status: Optional[RequestStatus] = None
-
-class PurchaseRequestResponse(BaseModel):
-    request_id: int
-    user_id: int
-    created_at: datetime
-    status: RequestStatus
-    justification: str
-    items: Optional[List[RequestItemCreate]]
     
 @app.post("/api/v1/purchase-requests", status_code=201, tags=["Purchase Requests"])
 async def create_purchase_request(
@@ -799,18 +663,7 @@ async def delete_purchase_request(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-class RequestItemBase(BaseModel):
-    material_id: int
-    quantity: int = Field(gt=0)
-    estimated_cost: float = Field(gt=0)
 
-class RequestItemCreate(RequestItemBase):
-    request_id: int
-
-class RequestItemResponse(RequestItemBase):
-    request_item_id: int
-    request_id: int
-    created_at: datetime
 
 @app.post("/api/v1/request-items", response_model=RequestItemResponse, tags=["Request Items"])
 async def create_request_item(
@@ -917,17 +770,7 @@ async def delete_request_item(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-class ApprovalCreate(BaseModel):
-    decision: ApprovalDecision
-    comment: Optional[str] = None
 
-class ApprovalResponse(BaseModel):
-    approval_id: int
-    request_id: int
-    daf_user_id: int
-    decision: ApprovalDecision
-    comment: Optional[str]
-    approved_at: datetime
 
 @app.post("/api/v1/approvals/{request_id}", response_model=ApprovalResponse,tags=["Approvals"])
 async def create_approval(
@@ -1015,231 +858,5 @@ async def list_approvals(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-class OrderItemCreate(BaseModel):
-    material_id: int
-    quantity: int = Field(gt=0)
-    actual_cost: float = Field(gt=0)
 
-class OrderCreate(BaseModel):
-    request_id: int
-    supplier_id: int
-    order_number: str
-    items: List[OrderItemCreate]
 
-class OrderResponse(BaseModel):
-    order_id: int
-    request_id: int
-    supplier_id: int
-    order_number: str
-    tracking_status: TrackingStatus
-    ordered_at: datetime
-    delivered_at: Optional[datetime]
-    items: List[OrderItemCreate]
-
-@app.post("/api/v1/orders", response_model=OrderResponse,tags=["Orders"])
-async def create_order(
-    order: OrderCreate,
-    user = Depends(get_current_user)
-) -> OrderResponse:
-    """Create a new order."""
-    try:
-        
-        if user.get("role") != "logistique":
-            raise HTTPException(status_code=403, detail="Unauthorized access")
-
-        # Check application approved
-        request = supabase_client.table("purchase_requests")\
-            .select("status")\
-            .eq("request_id", order.request_id)\
-            .single()\
-            .execute()
-            
-        if not request.data or request.data["status"] != RequestStatus.APPROVED:
-            raise HTTPException(status_code=400, detail="The request must be approved")
-
-        # Add order
-        order_data = {
-            "request_id": order.request_id,
-            "supplier_id": order.supplier_id,
-            "order_number": order.order_number,
-            "tracking_status": TrackingStatus.PREPARED,
-            "ordered_at": datetime.now().isoformat()
-        }
-
-        result = supabase_client.table("orders").insert(order_data).execute()
-        order_id = result.data[0]["order_id"]
-
-        # Add items
-        for item in order.items:
-            item_data = {
-                "order_id": order_id,
-                "material_id": item.material_id,
-                "quantity": item.quantity,
-                "actual_cost": item.actual_cost
-            }
-            supabase_client.table("order_items").insert(item_data).execute()
-
-        
-        supabase_client.table("purchase_requests")\
-            .update({"status": RequestStatus.ORDERED})\
-            .eq("request_id", order.request_id)\
-            .execute()
-
-        return {**result.data[0], "items": order.items}
-    
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/api/v1/orders/{order_id}/tracking",tags=["Orders"])
-async def update_tracking(
-    order_id: int,
-    tracking_status: TrackingStatus,
-    user = Depends(get_current_user)
-) -> dict:
-    """Update delivery status."""
-    try:
-        if user.get("role") != "logistique":
-            raise HTTPException(status_code=403, detail="Unauthorized access")
-
-        update_data = {"tracking_status": tracking_status}
-        if tracking_status == TrackingStatus.DELIVERED:
-            update_data["delivered_at"] = datetime.now().isoformat()
-
-        result = supabase_client.table("orders")\
-            .update(update_data)\
-            .eq("order_id", order_id)\
-            .execute()
-
-        if tracking_status == TrackingStatus.DELIVERED:
-            
-            order = result.data[0]
-            supabase_client.table("purchase_requests")\
-                .update({"status": RequestStatus.DELIVERED})\
-                .eq("request_id", order["request_id"])\
-                .execute()
-
-        return {"message": "Status updated successfully"}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/orders", response_model=List[OrderResponse],tags=["Orders"])
-async def list_orders(user = Depends(get_current_user)) -> List[OrderResponse]:
-    """List all commands."""
-    try:
-        if user.get("role") not in ["logistique", "daf"]:
-            raise HTTPException(status_code=403, detail="Unauthorized access")
-        
-        result = supabase_client.table("orders")\
-            .select("*, order_items(*)")\
-            .execute()
-        return result.data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/orders/{order_id}", response_model=OrderResponse,tags=["Orders"])
-async def get_order(
-    order_id: int,
-    user = Depends(get_current_user)
-) -> OrderResponse:
-    """Get order details."""
-    try:
-        if user.get("role") not in ["logistique", "daf"]:
-            raise HTTPException(status_code=403, detail="Unauthorized access")
-        
-        result = supabase_client.table("orders")\
-            .select("*, order_items(*)")\
-            .eq("order_id", order_id)\
-            .single()\
-            .execute()
-            
-        if not result.data:
-            raise HTTPException(status_code=404, detail="Order not found")
-            
-        return result.data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/orders", response_model=OrderResponse,tags=["Orders"])
-async def create_order(
-    order: OrderCreate,
-    user = Depends(get_current_user)
-) -> OrderResponse:
-    """Create a new order."""
-    try:
-        if user.get("role") != "logistique":
-            raise HTTPException(status_code=403, detail="Unauthorized access")
-
-    
-        request = supabase_client.table("purchase_requests")\
-            .select("status")\
-            .eq("request_id", order.request_id)\
-            .single()\
-            .execute()
-            
-        if not request.data or request.data["status"] != "approved":
-            raise HTTPException(status_code=400, detail="The request must be approved")
-
-        
-        order_data = {
-            "request_id": order.request_id,
-            "supplier_id": order.supplier_id,
-            "order_number": order.order_number,
-            "tracking_status": TrackingStatus.PREPARED,
-            "ordered_at": datetime.now().isoformat()
-        }
-
-        order_result = supabase_client.table("orders").insert(order_data).execute()
-        order_id = order_result.data[0]["order_id"]
-
-        
-        for item in order.items:
-            order_item = {
-                "order_id": order_id,
-                "material_id": item.material_id,
-                "quantity": item.quantity,
-                "actual_cost": item.actual_cost
-            }
-            supabase_client.table("order_items").insert(order_item).execute()
-
-        
-        supabase_client.table("purchase_requests")\
-            .update({"status": RequestStatus.ORDERED})\
-            .eq("request_id", order.request_id)\
-            .execute()
-
-        return await get_order(order_id, user)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/api/v1/orders/{order_id}/tracking",tags=["Orders"])
-async def update_order_tracking(
-    order_id: int,
-    tracking_status: TrackingStatus,
-    user = Depends(get_current_user)
-) -> dict:
-    """Update the delivery status of an order."""
-    try:
-        if user.get("role") != "logistique":
-            raise HTTPException(status_code=403, detail="Unauthorized access")
-
-        update_data = {"tracking_status": tracking_status}
-        if tracking_status == TrackingStatus.DELIVERED:
-            update_data["delivered_at"] = datetime.now().isoformat()
-
-        order = supabase_client.table("orders")\
-            .update(update_data)\
-            .eq("order_id", order_id)\
-            .execute()
-
-        if tracking_status == TrackingStatus.DELIVERED:
-            supabase_client.table("purchase_requests")\
-                .update({"status": RequestStatus.DELIVERED})\
-                .eq("request_id", order.data[0]["request_id"])\
-                .execute()
-
-        return {"message": "Order status updated"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
