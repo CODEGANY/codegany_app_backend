@@ -1,7 +1,6 @@
 import json
 from typing import Optional, List, Dict, Any
 from services.connection_db import supabase_client
-
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import jwt
@@ -1067,3 +1066,42 @@ async def update_order_tracking(
         return {"message": "Order status updated"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/materials/order-stats", tags=["Materials"])
+async def get_material_order_stats():
+    """Récupère les statistiques des matériels les plus commandés dans les requêtes approuvées."""
+    try:
+        # Requête avec les bons noms de tables
+        result = (
+            supabase_client.table("requestitems")
+            .select(
+                "quantity, material_id, purchaserequests!inner(status)"
+            )
+            .eq("purchaserequests.status", "approved")
+            .execute()
+        )
+
+        # Récupérer les infos des matériels
+        materials = supabase_client.table("materials").select("material_id, name").execute()
+        materials_dict = {m["material_id"]: m["name"] for m in materials.data}
+
+        # Aggrégation des données par matériel
+        stats = {}
+        for item in result.data:
+            material_id = item["material_id"]
+            material_name = materials_dict.get(material_id, f"Matériel {material_id}")
+            quantity = item["quantity"]
+            stats[material_name] = stats.get(material_name, 0) + quantity
+
+        # Tri et sélection des 5 premiers
+        top_materials = sorted(
+            [{"material_name": name, "order_count": count} 
+             for name, count in stats.items()],
+            key=lambda x: x["order_count"],
+            reverse=True
+        )[:5]
+
+        return top_materials
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
