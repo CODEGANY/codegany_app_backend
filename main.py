@@ -1105,3 +1105,52 @@ async def get_material_order_stats():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
+    
+    
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
+
+@app.post("/api/v1/materials/monthly-costs", tags=["Materials"])
+async def get_monthly_costs():
+    """Recovers monthly costs of approved orders."""
+    try:
+        # Get the date 6 months ago
+        six_months_ago = datetime.now() - relativedelta(months=6)
+        
+        result = (
+            supabase_client.table("requestitems")
+            .select(
+                "estimated_cost, purchaserequests!inner(created_at, status)"
+            )
+            .eq("purchaserequests.status", "approved")
+            .gte("purchaserequests.created_at", six_months_ago.isoformat())
+            .execute()
+        )
+
+        
+        monthly_costs = {}
+        for item in result.data:
+            created_at = datetime.fromisoformat(item["purchaserequests"]["created_at"])
+            month = created_at.strftime("%Y-%m")
+            cost = float(item["estimated_cost"])
+            monthly_costs[month] = monthly_costs.get(month, 0) + cost
+
+        
+        months_fr = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", 
+                    "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+        
+        formatted_data = []
+        current = datetime.now()
+        for i in range(5, -1, -1):
+            date = current - relativedelta(months=i)
+            month_key = date.strftime("%Y-%m")
+            month_name = months_fr[date.month - 1]
+            formatted_data.append({
+                "month": month_name,
+                "cost": int(monthly_costs.get(month_key, 0))
+            })
+
+        return formatted_data
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
