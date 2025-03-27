@@ -500,7 +500,7 @@ async def register_user(user_data: UserRegistrationRequest) -> UserResponse:
     
 @app.post("/api/v1/purchase-requests", status_code=201, tags=["Purchase Requests"])
 async def create_purchase_request(
-    request: PurchaseRequestCreate,
+    request: PurchaseRequestUpdate,
     user = Depends(get_current_user)
 ) -> dict:
     """Create a new purchase request."""
